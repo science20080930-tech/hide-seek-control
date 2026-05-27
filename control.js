@@ -2,6 +2,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
+const ACTIVE_PLAYER_MS = 20_000;
+const REFRESH_PLAYERS_MS = 5_000;
 
 const state = {
   supabase: createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
@@ -16,6 +18,7 @@ const state = {
   channel: null,
   players: [],
   markers: new Map(),
+  refreshTimer: null,
 };
 
 const el = {
@@ -76,6 +79,12 @@ function bindEvents() {
     state.roomCode = cleanRoomCode(el.roomCode.value);
     el.roomCode.value = state.roomCode;
   });
+
+  state.refreshTimer = window.setInterval(() => {
+    if (state.session) {
+      loadPlayers();
+    }
+  }, REFRESH_PLAYERS_MS);
 }
 
 async function login() {
@@ -143,6 +152,8 @@ async function loadPlayers() {
     .from("game_players")
     .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
     .eq("room_code", state.roomCode)
+    .eq("is_online", true)
+    .gte("updated_at", getActiveSinceIso())
     .order("updated_at", { ascending: false });
 
   if (error) {
@@ -165,6 +176,11 @@ function applyRealtimePayload(payload) {
   if (!payload.new?.user_id) return;
 
   const next = fromDatabasePlayer(payload.new);
+  if (!isPlayerActive(next)) {
+    state.players = state.players.filter((player) => player.userId !== next.userId);
+    return;
+  }
+
   const index = state.players.findIndex((player) => player.userId === next.userId);
   if (index >= 0) {
     state.players[index] = next;
@@ -193,7 +209,11 @@ function renderShell() {
   const loggedIn = Boolean(state.session);
   el.loginPanel.classList.toggle("hidden", loggedIn);
   el.roomPanel.classList.toggle("hidden", !loggedIn);
-  el.statusText.textContent = loggedIn ? "已登入，等待監看" : "等待登入";
+  el.statusText.textContent = loggedIn
+    ? state.channel
+      ? `正在監看 ${state.roomCode} 房間`
+      : "已登入，等待監看"
+    : "等待登入";
 }
 
 function render() {
@@ -204,26 +224,29 @@ function render() {
 }
 
 function renderStats() {
-  el.totalCount.textContent = state.players.length;
-  el.redCount.textContent = state.players.filter((player) => player.team === "red").length;
-  el.greenCount.textContent = state.players.filter((player) => player.team === "green").length;
+  const players = getActivePlayers();
+  el.totalCount.textContent = players.length;
+  el.redCount.textContent = players.filter((player) => player.team === "red").length;
+  el.greenCount.textContent = players.filter((player) => player.team === "green").length;
 }
 
 function renderList() {
-  if (!state.players.length) {
+  const players = getActivePlayers();
+
+  if (!players.length) {
     el.playerList.innerHTML = `
       <div class="player-row">
         <span class="player-dot"></span>
         <span>
-          <strong>目前沒有玩家資料</strong>
-          <small>玩家登入並選隊後會出現在這裡</small>
+          <strong>目前沒有在線玩家</strong>
+          <small>玩家登入、選隊並持續同步定位後會出現在這裡</small>
         </span>
       </div>
     `;
     return;
   }
 
-  el.playerList.innerHTML = state.players
+  el.playerList.innerHTML = players
     .map((player) => {
       const teamLabel = player.team === "red" ? "紅隊" : "綠隊";
       const onlineLabel = player.isOnline ? "在線" : "離線";
@@ -242,7 +265,8 @@ function renderList() {
 }
 
 function renderMarkers() {
-  const visibleIds = new Set(state.players.map((player) => player.id));
+  const players = getActivePlayers();
+  const visibleIds = new Set(players.map((player) => player.id));
 
   state.markers.forEach((marker, id) => {
     if (!visibleIds.has(id)) {
@@ -251,7 +275,7 @@ function renderMarkers() {
     }
   });
 
-  state.players.forEach((player) => {
+  players.forEach((player) => {
     const icon = L.divIcon({
       html: `<span class="control-marker ${player.team}">${player.team === "red" ? "紅" : "綠"}</span>`,
       className: "",
@@ -267,10 +291,25 @@ function renderMarkers() {
     }
   });
 
-  if (state.players.length) {
+  if (players.length) {
     const group = L.featureGroup([...state.markers.values()]);
     state.map.fitBounds(group.getBounds().pad(0.2), { maxZoom: 17 });
   }
+}
+
+function getActivePlayers() {
+  return state.players.filter(isPlayerActive);
+}
+
+function isPlayerActive(player) {
+  if (!player.isOnline) return false;
+  if (!player.updatedAt) return false;
+  const updatedAt = Date.parse(player.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt <= ACTIVE_PLAYER_MS;
+}
+
+function getActiveSinceIso() {
+  return new Date(Date.now() - ACTIVE_PLAYER_MS).toISOString();
 }
 
 function setMessage(message) {
