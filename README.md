@@ -14,7 +14,13 @@ node server.mjs
 
 控制台登入後會讀取 Supabase `game_players`，顯示同一房間內紅隊和綠隊所有玩家位置。
 
-公開預覽：
+正式上線：
+
+```text
+https://science20080930-tech.github.io/hide-seek-control/
+```
+
+本機 tunnel 預覽：
 
 ```text
 https://afraid-rats-refuse.loca.lt
