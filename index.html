@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>捉迷藏控制台</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="preconnect" href="https://esm.sh" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="control-shell">
+      <aside class="sidebar">
+        <div class="title-block">
+          <p class="eyebrow">Hide & Seek Control</p>
+          <h1>控制台</h1>
+          <p id="statusText">等待登入</p>
+        </div>
+
+        <section id="loginPanel" class="panel">
+          <h2>控制員登入</h2>
+          <label>
+            Email
+            <input id="emailInput" type="email" placeholder="controller@example.com" autocomplete="email" />
+          </label>
+          <label>
+            密碼
+            <input id="passwordInput" type="password" placeholder="Supabase 密碼" autocomplete="current-password" />
+          </label>
+          <button id="loginButton" type="button" class="primary-action">登入控制台</button>
+          <p id="loginMessage" class="message-line"></p>
+        </section>
+
+        <section id="roomPanel" class="panel hidden">
+          <h2>監看房間</h2>
+          <label>
+            房間代碼
+            <input id="roomCode" type="text" value="main" maxlength="24" />
+          </label>
+          <div class="action-grid">
+            <button id="watchButton" type="button" class="primary-action">開始監看</button>
+            <button id="logoutButton" type="button" class="secondary-action">登出</button>
+          </div>
+        </section>
+
+        <section class="panel stat-panel">
+          <div>
+            <strong id="totalCount">0</strong>
+            <span>全部玩家</span>
+          </div>
+          <div>
+            <strong id="redCount">0</strong>
+            <span>紅隊</span>
+          </div>
+          <div>
+            <strong id="greenCount">0</strong>
+            <span>綠隊</span>
+          </div>
+        </section>
+
+        <section class="panel player-panel">
+          <h2>玩家位置</h2>
+          <div id="playerList" class="player-list"></div>
+        </section>
+      </aside>
+
+      <section class="map-area" aria-label="控制台地圖">
+        <div id="map"></div>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="./control.js" type="module"></script>
+  </body>
+</html>

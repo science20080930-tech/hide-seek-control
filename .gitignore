@@ -1,0 +1,5 @@
+*.log
+verified-*.png
+tunnel*.txt
+.DS_Store
+Thumbs.db
