@@ -33,15 +33,30 @@
         </section>
 
         <section id="roomPanel" class="panel hidden">
-          <h2>監看房間</h2>
+          <h2>房間管理</h2>
           <label>
             房間代碼
             <input id="roomCode" type="text" value="main" maxlength="24" />
           </label>
           <div class="action-grid">
-            <button id="watchButton" type="button" class="primary-action">開始監看</button>
+            <button id="watchButton" type="button" class="primary-action">建立/監看</button>
             <button id="logoutButton" type="button" class="secondary-action">登出</button>
           </div>
+          <div class="team-slots">
+            <label>
+              紅隊人數
+              <input id="redSlots" type="number" min="0" step="1" value="0" />
+            </label>
+            <label>
+              綠隊人數
+              <input id="greenSlots" type="number" min="0" step="1" value="0" />
+            </label>
+          </div>
+          <div class="action-grid">
+            <button id="startGameButton" type="button" class="primary-action" disabled>開始遊戲</button>
+            <button id="endGameButton" type="button" class="danger-action" disabled>遊戲結束</button>
+          </div>
+          <p id="roomMessage" class="message-line"></p>
         </section>
 
         <section class="panel stat-panel">
@@ -66,6 +81,7 @@
       </aside>
 
       <section class="map-area" aria-label="控制台地圖">
+        <button id="cancelFollowButton" class="follow-cancel hidden" type="button">取消追蹤</button>
         <div id="map"></div>
       </section>
     </main>
