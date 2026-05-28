@@ -24,6 +24,8 @@ const state = {
   autoFitMap: true,
   isAutoFitting: false,
   followedPlayerId: "",
+  isRoomBusy: false,
+  realtimeHealthy: false,
 };
 
 const el = {
@@ -113,6 +115,7 @@ function bindEvents() {
 
   state.refreshTimer = window.setInterval(() => {
     if (state.session && state.room) {
+      loadRoom();
       loadPlayers();
     }
   }, REFRESH_PLAYERS_MS);
@@ -151,69 +154,91 @@ async function logout() {
 
 async function createOrWatchRoom() {
   if (!state.session) return;
+  if (state.isRoomBusy) return;
 
   const roomCode = cleanRoomCode(el.roomCode.value);
   el.roomCode.value = roomCode;
+  state.isRoomBusy = true;
+  render();
   setRoomMessage("正在建立或監看房間...");
 
-  const { data: existingRoom, error: readError } = await state.supabase
-    .from("game_rooms")
-    .select("room_code,status")
-    .eq("room_code", roomCode)
-    .maybeSingle();
+  try {
+    const { data: existingRoom, error: readError } = await withTimeout(
+      state.supabase
+        .from("game_rooms")
+        .select("room_code,status")
+        .eq("room_code", roomCode)
+        .maybeSingle(),
+      "讀取房間逾時，請再按一次建立/監看。",
+    );
 
-  if (readError) {
-    setRoomMessage(`${readError.message}。請確認 Supabase schema 已更新。`);
-    return;
-  }
-
-  if (!existingRoom) {
-    if (!(await clearRoomSessionData(roomCode))) return;
-
-    const roomPayload = {
-      room_code: roomCode,
-      status: "lobby",
-      created_by: state.session.user.id,
-      updated_at: new Date().toISOString(),
-      started_at: null,
-      ended_at: null,
-    };
-
-    const { error } = await state.supabase.from("game_rooms").insert(roomPayload);
-
-    if (error) {
-      setRoomMessage(`${error.message}。請確認 Supabase schema 已更新，且此帳號是控制員。`);
+    if (readError) {
+      setRoomMessage(`${readError.message}。請確認 Supabase schema 已更新。`);
       return;
     }
-  } else if (existingRoom.status === "ended") {
-    if (!(await clearRoomSessionData(roomCode))) return;
 
-    const { error } = await state.supabase
-      .from("game_rooms")
-      .update({
+    if (!existingRoom) {
+      if (!(await clearRoomSessionData(roomCode))) return;
+
+      const roomPayload = {
+        room_code: roomCode,
         status: "lobby",
-        red_slots: null,
-        green_slots: null,
+        created_by: state.session.user.id,
         updated_at: new Date().toISOString(),
         started_at: null,
         ended_at: null,
-      })
-      .eq("room_code", roomCode);
+      };
 
-    if (error) {
-      setRoomMessage(error.message);
-      return;
+      const { error } = await withTimeout(
+        state.supabase.from("game_rooms").insert(roomPayload),
+        "建立房間逾時，請再按一次建立/監看。",
+      );
+
+      if (error) {
+        setRoomMessage(`${error.message}。請確認 Supabase schema 已更新，且此帳號是控制員。`);
+        return;
+      }
+    } else if (existingRoom.status === "ended") {
+      if (!(await clearRoomSessionData(roomCode))) return;
+
+      const { error } = await withTimeout(
+        state.supabase
+          .from("game_rooms")
+          .update({
+            status: "lobby",
+            red_slots: null,
+            green_slots: null,
+            updated_at: new Date().toISOString(),
+            started_at: null,
+            ended_at: null,
+          })
+          .eq("room_code", roomCode),
+        "重開房間逾時，請再按一次建立/監看。",
+      );
+
+      if (error) {
+        setRoomMessage(error.message);
+        return;
+      }
     }
-  }
 
-  await watchRoom(roomCode);
+    await watchRoom(roomCode);
+  } catch (error) {
+    setRoomMessage(error.message || "建立或監看房間失敗，請再試一次。");
+  } finally {
+    state.isRoomBusy = false;
+    render();
+  }
 }
 
 async function clearRoomSessionData(roomCode) {
-  const { error: playerError } = await state.supabase
-    .from("game_players")
-    .delete()
-    .eq("room_code", roomCode);
+  const { error: playerError } = await withTimeout(
+    state.supabase
+      .from("game_players")
+      .delete()
+      .eq("room_code", roomCode),
+    "清除上一局玩家資料逾時，房間尚未開放加入。",
+  );
 
   if (playerError) {
     setRoomMessage(playerError.message);
@@ -238,6 +263,7 @@ async function watchRoom(nextRoomCode = state.roomCode) {
   state.room = null;
   state.followedPlayerId = "";
   state.autoFitMap = true;
+  state.realtimeHealthy = false;
   render();
 
   await loadRoom();
@@ -277,10 +303,12 @@ async function watchRoom(nextRoomCode = state.roomCode) {
     )
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
+        state.realtimeHealthy = true;
         setRoomMessage(`正在監看 ${state.roomCode} 房間`);
       }
       if (status === "CHANNEL_ERROR") {
-        setRoomMessage("Realtime 連線失敗");
+        state.realtimeHealthy = false;
+        setRoomMessage(`正在用輪詢監看 ${state.roomCode} 房間`);
       }
     });
 }
@@ -296,11 +324,22 @@ async function stopWatching(bumpToken = true) {
 }
 
 async function loadRoom() {
-  const { data, error } = await state.supabase
-    .from("game_rooms")
-    .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
-    .eq("room_code", state.roomCode)
-    .maybeSingle();
+  let result;
+  try {
+    result = await withTimeout(
+      state.supabase
+        .from("game_rooms")
+        .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+        .eq("room_code", state.roomCode)
+        .maybeSingle(),
+      "讀取房間狀態逾時。",
+    );
+  } catch (error) {
+    setRoomMessage(error.message);
+    return;
+  }
+
+  const { data, error } = result;
 
   if (error) {
     setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
@@ -313,13 +352,24 @@ async function loadRoom() {
 async function loadPlayers() {
   if (!state.room) return;
 
-  const { data, error } = await state.supabase
-    .from("game_players")
-    .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
-    .eq("room_code", state.roomCode)
-    .eq("is_online", true)
-    .gte("updated_at", getActiveSinceIso())
-    .order("updated_at", { ascending: false });
+  let result;
+  try {
+    result = await withTimeout(
+      state.supabase
+        .from("game_players")
+        .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+        .eq("room_code", state.roomCode)
+        .eq("is_online", true)
+        .gte("updated_at", getActiveSinceIso())
+        .order("updated_at", { ascending: false }),
+      "讀取玩家位置逾時。",
+    );
+  } catch (error) {
+    setRoomMessage(error.message);
+    return;
+  }
+
+  const { data, error } = result;
 
   if (error) {
     setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
@@ -544,10 +594,11 @@ function renderRoomControls() {
   const isStarted = state.room?.status === "started";
   const validCounts = isLobby && players.length > 0 && redSlots + greenSlots === players.length;
 
-  el.startGameButton.disabled = !validCounts;
-  el.endGameButton.disabled = !state.room || state.room.status === "ended";
-  el.redSlots.disabled = !isLobby;
-  el.greenSlots.disabled = !isLobby;
+  el.watchButton.disabled = state.isRoomBusy;
+  el.startGameButton.disabled = state.isRoomBusy || !validCounts;
+  el.endGameButton.disabled = state.isRoomBusy || !state.room || state.room.status === "ended";
+  el.redSlots.disabled = state.isRoomBusy || !isLobby;
+  el.greenSlots.disabled = state.isRoomBusy || !isLobby;
 
   if (!state.room) {
     el.startGameButton.textContent = "開始遊戲";
@@ -711,6 +762,16 @@ function shuffle(items) {
 function clearMarkers() {
   state.markers.forEach((marker) => marker.remove());
   state.markers.clear();
+}
+
+function withTimeout(promise, message, timeoutMs = 10000) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
 }
 
 function setLoginMessage(message) {
