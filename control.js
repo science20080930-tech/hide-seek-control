@@ -126,10 +126,19 @@ async function login() {
     return;
   }
 
-  const { error } = await state.supabase.auth.signInWithPassword({ email, password });
+  el.loginButton.disabled = true;
+  setLoginMessage("正在登入...");
+  const { data, error } = await state.supabase.auth.signInWithPassword({ email, password });
+  el.loginButton.disabled = false;
   if (error) {
     setLoginMessage(error.message);
+    return;
   }
+
+  state.session = data.session;
+  setLoginMessage("");
+  render();
+  await watchRoom();
 }
 
 async function logout() {
@@ -149,7 +158,7 @@ async function createOrWatchRoom() {
 
   const { data: existingRoom, error: readError } = await state.supabase
     .from("game_rooms")
-    .select("room_code")
+    .select("room_code,status")
     .eq("room_code", roomCode)
     .maybeSingle();
 
@@ -174,9 +183,49 @@ async function createOrWatchRoom() {
       setRoomMessage(`${error.message}。請確認 Supabase schema 已更新，且此帳號是控制員。`);
       return;
     }
+    if (!(await clearRoomSessionData(roomCode))) return;
+  } else if (existingRoom.status === "ended") {
+    const { error } = await state.supabase
+      .from("game_rooms")
+      .update({
+        status: "lobby",
+        red_slots: null,
+        green_slots: null,
+        updated_at: new Date().toISOString(),
+        started_at: null,
+        ended_at: null,
+      })
+      .eq("room_code", roomCode);
+
+    if (error) {
+      setRoomMessage(error.message);
+      return;
+    }
+    if (!(await clearRoomSessionData(roomCode))) return;
   }
 
   await watchRoom(roomCode);
+}
+
+async function clearRoomSessionData(roomCode) {
+  const { error: playerError } = await state.supabase
+    .from("game_players")
+    .update({
+      team: null,
+      lat: null,
+      lng: null,
+      accuracy: null,
+      is_online: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("room_code", roomCode);
+
+  if (playerError) {
+    setRoomMessage(playerError.message);
+    return false;
+  }
+
+  return true;
 }
 
 async function watchRoom(nextRoomCode = state.roomCode) {
@@ -199,6 +248,7 @@ async function watchRoom(nextRoomCode = state.roomCode) {
   await loadRoom();
   await loadPlayers();
   if (token !== state.channelToken) return;
+  setRoomMessage(state.room ? `正在監看 ${state.roomCode} 房間` : "這個房間尚未建立。");
 
   state.channel = state.supabase
     .channel(`control-${state.roomCode}-${token}`)
@@ -406,7 +456,13 @@ async function endGame() {
 
   const { error: playerError } = await state.supabase
     .from("game_players")
-    .delete()
+    .update({
+      lat: null,
+      lng: null,
+      accuracy: null,
+      is_online: false,
+      updated_at: new Date().toISOString(),
+    })
     .eq("room_code", state.roomCode);
 
   if (playerError) {
