@@ -163,10 +163,11 @@ async function createOrWatchRoom() {
   setRoomMessage("正在建立或監看房間...");
 
   try {
+    let roomSnapshot = null;
     const { data: existingRoom, error: readError } = await withTimeout(
       state.supabase
         .from("game_rooms")
-        .select("room_code,status")
+        .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
         .eq("room_code", roomCode)
         .maybeSingle(),
       "讀取房間逾時，請再按一次建立/監看。",
@@ -189,8 +190,8 @@ async function createOrWatchRoom() {
         ended_at: null,
       };
 
-      const { error } = await withTimeout(
-        state.supabase.from("game_rooms").insert(roomPayload),
+      const { data, error } = await withTimeout(
+        state.supabase.from("game_rooms").insert(roomPayload).select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at").single(),
         "建立房間逾時，請再按一次建立/監看。",
       );
 
@@ -198,10 +199,11 @@ async function createOrWatchRoom() {
         setRoomMessage(`${error.message}。請確認 Supabase schema 已更新，且此帳號是控制員。`);
         return;
       }
+      roomSnapshot = data || roomPayload;
     } else if (existingRoom.status === "ended") {
       if (!(await clearRoomSessionData(roomCode))) return;
 
-      const { error } = await withTimeout(
+      const { data, error } = await withTimeout(
         state.supabase
           .from("game_rooms")
           .update({
@@ -212,7 +214,9 @@ async function createOrWatchRoom() {
             started_at: null,
             ended_at: null,
           })
-          .eq("room_code", roomCode),
+          .eq("room_code", roomCode)
+          .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+          .single(),
         "重開房間逾時，請再按一次建立/監看。",
       );
 
@@ -220,9 +224,12 @@ async function createOrWatchRoom() {
         setRoomMessage(error.message);
         return;
       }
+      roomSnapshot = data || { ...existingRoom, status: "lobby", red_slots: null, green_slots: null, started_at: null, ended_at: null };
+    } else {
+      roomSnapshot = existingRoom;
     }
 
-    await watchRoom(roomCode);
+    await watchRoom(roomCode, { roomSnapshot, skipInitialPlayers: true });
   } catch (error) {
     setRoomMessage(error.message || "建立或監看房間失敗，請再試一次。");
   } finally {
@@ -248,7 +255,7 @@ async function clearRoomSessionData(roomCode) {
   return true;
 }
 
-async function watchRoom(nextRoomCode = state.roomCode) {
+async function watchRoom(nextRoomCode = state.roomCode, options = {}) {
   if (!state.session) return;
 
   const roomCode = cleanRoomCode(nextRoomCode);
@@ -266,8 +273,17 @@ async function watchRoom(nextRoomCode = state.roomCode) {
   state.realtimeHealthy = false;
   render();
 
-  await loadRoom();
-  await loadPlayers();
+  if (options.roomSnapshot) {
+    state.room = options.roomSnapshot;
+  } else {
+    await loadRoom();
+  }
+
+  if (state.room && options.skipInitialPlayers) {
+    loadPlayers({ silent: true });
+  } else {
+    await loadPlayers();
+  }
   if (token !== state.channelToken) return;
   setRoomMessage(state.room ? `正在監看 ${state.roomCode} 房間` : "這個房間尚未建立。");
 
@@ -772,11 +788,16 @@ function clearMarkers() {
 }
 
 function withTimeout(promise, message, timeoutMs = 20000) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const request = controller && typeof promise?.abortSignal === "function" ? promise.abortSignal(controller.signal) : promise;
   let timeoutId;
   const timeout = new Promise((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    timeoutId = window.setTimeout(() => {
+      controller?.abort();
+      reject(new Error(message));
+    }, timeoutMs);
   });
-  return Promise.race([promise, timeout]).finally(() => {
+  return Promise.race([request, timeout]).finally(() => {
     window.clearTimeout(timeoutId);
   });
 }
