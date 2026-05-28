@@ -168,6 +168,8 @@ async function createOrWatchRoom() {
   }
 
   if (!existingRoom) {
+    if (!(await clearRoomSessionData(roomCode))) return;
+
     const roomPayload = {
       room_code: roomCode,
       status: "lobby",
@@ -183,8 +185,9 @@ async function createOrWatchRoom() {
       setRoomMessage(`${error.message}。請確認 Supabase schema 已更新，且此帳號是控制員。`);
       return;
     }
-    if (!(await clearRoomSessionData(roomCode))) return;
   } else if (existingRoom.status === "ended") {
+    if (!(await clearRoomSessionData(roomCode))) return;
+
     const { error } = await state.supabase
       .from("game_rooms")
       .update({
@@ -201,7 +204,6 @@ async function createOrWatchRoom() {
       setRoomMessage(error.message);
       return;
     }
-    if (!(await clearRoomSessionData(roomCode))) return;
   }
 
   await watchRoom(roomCode);
