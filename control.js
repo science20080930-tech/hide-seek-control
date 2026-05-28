@@ -163,6 +163,10 @@ async function createOrWatchRoom() {
   setRoomMessage("正在建立或監看房間...");
 
   try {
+    const restRoomSnapshot = await ensureRoomViaRest(roomCode);
+    await watchRoom(roomCode, { roomSnapshot: restRoomSnapshot, skipInitialPlayers: true });
+    return;
+
     let roomSnapshot = null;
     const { data: existingRoom, error: readError } = await withTimeout(
       state.supabase
@@ -253,6 +257,68 @@ async function clearRoomSessionData(roomCode) {
   }
 
   return true;
+}
+
+async function ensureRoomViaRest(roomCode) {
+  const selectPath = `game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at&room_code=eq.${encodeURIComponent(roomCode)}&limit=1`;
+  const existingRows = await restRequest(selectPath, { method: "GET" }, "讀取房間逾時，請再按一次建立/監看。");
+  const existingRoom = Array.isArray(existingRows) ? existingRows[0] : null;
+
+  if (!existingRoom) {
+    await restRequest(
+      `game_players?room_code=eq.${encodeURIComponent(roomCode)}`,
+      { method: "DELETE", headers: { prefer: "return=minimal" } },
+      "清除上一局玩家資料逾時，房間尚未開放加入。",
+    );
+
+    const roomPayload = {
+      room_code: roomCode,
+      status: "lobby",
+      created_by: state.session.user.id,
+      updated_at: new Date().toISOString(),
+      started_at: null,
+      ended_at: null,
+    };
+    const insertedRows = await restRequest(
+      "game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at",
+      {
+        method: "POST",
+        headers: { prefer: "return=representation" },
+        body: JSON.stringify(roomPayload),
+      },
+      "建立房間逾時，請再按一次建立/監看。",
+    );
+    return Array.isArray(insertedRows) ? insertedRows[0] : roomPayload;
+  }
+
+  if (existingRoom.status !== "ended") {
+    return existingRoom;
+  }
+
+  await restRequest(
+    `game_players?room_code=eq.${encodeURIComponent(roomCode)}`,
+    { method: "DELETE", headers: { prefer: "return=minimal" } },
+    "清除上一局玩家資料逾時，房間尚未開放加入。",
+  );
+
+  const patchPayload = {
+    status: "lobby",
+    red_slots: null,
+    green_slots: null,
+    updated_at: new Date().toISOString(),
+    started_at: null,
+    ended_at: null,
+  };
+  const updatedRows = await restRequest(
+    `game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at&room_code=eq.${encodeURIComponent(roomCode)}`,
+    {
+      method: "PATCH",
+      headers: { prefer: "return=representation" },
+      body: JSON.stringify(patchPayload),
+    },
+    "重開房間逾時，請再按一次建立/監看。",
+  );
+  return Array.isArray(updatedRows) ? updatedRows[0] : { ...existingRoom, ...patchPayload };
 }
 
 async function watchRoom(nextRoomCode = state.roomCode, options = {}) {
@@ -800,6 +866,39 @@ function withTimeout(promise, message, timeoutMs = 20000) {
   return Promise.race([request, timeout]).finally(() => {
     window.clearTimeout(timeoutId);
   });
+}
+
+async function restRequest(path, options = {}, message = "連線逾時，請再試一次。", timeoutMs = 12000) {
+  if (!state.session?.access_token) throw new Error("請先登入控制台。");
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${SUPABASE_CONFIG.url}/rest/v1/${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        apikey: SUPABASE_CONFIG.anonKey,
+        authorization: `Bearer ${state.session.access_token}`,
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(detail || `Supabase 回應錯誤：${response.status}`);
+    }
+
+    if (response.status === 204) return null;
+    return response.json();
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error(message);
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function setLoginMessage(message) {
