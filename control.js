@@ -210,14 +210,7 @@ async function createOrWatchRoom() {
 async function clearRoomSessionData(roomCode) {
   const { error: playerError } = await state.supabase
     .from("game_players")
-    .update({
-      team: null,
-      lat: null,
-      lng: null,
-      accuracy: null,
-      is_online: false,
-      updated_at: new Date().toISOString(),
-    })
+    .delete()
     .eq("room_code", roomCode);
 
   if (playerError) {
