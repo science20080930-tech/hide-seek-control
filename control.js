@@ -2,8 +2,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
-const ACTIVE_PLAYER_MS = 8_000;
-const REFRESH_PLAYERS_MS = 1_000;
+const ACTIVE_PLAYER_MS = 120_000;
+const REFRESH_PLAYERS_MS = 2_000;
 
 const state = {
   supabase: createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
@@ -25,6 +25,7 @@ const state = {
   isAutoFitting: false,
   followedPlayerId: "",
   isRoomBusy: false,
+  isPolling: false,
   realtimeHealthy: false,
 };
 
@@ -115,8 +116,7 @@ function bindEvents() {
 
   state.refreshTimer = window.setInterval(() => {
     if (state.session && state.room) {
-      loadRoom();
-      loadPlayers();
+      refreshRoomSnapshot();
     }
   }, REFRESH_PLAYERS_MS);
 }
@@ -323,7 +323,18 @@ async function stopWatching(bumpToken = true) {
   }
 }
 
-async function loadRoom() {
+async function refreshRoomSnapshot() {
+  if (state.isPolling) return;
+  state.isPolling = true;
+  try {
+    await loadRoom({ silent: true });
+    await loadPlayers({ silent: true });
+  } finally {
+    state.isPolling = false;
+  }
+}
+
+async function loadRoom({ silent = false } = {}) {
   let result;
   try {
     result = await withTimeout(
@@ -335,21 +346,21 @@ async function loadRoom() {
       "讀取房間狀態逾時。",
     );
   } catch (error) {
-    setRoomMessage(error.message);
+    if (!silent) setRoomMessage(error.message);
     return;
   }
 
   const { data, error } = result;
 
   if (error) {
-    setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
+    if (!silent) setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
     return;
   }
 
   state.room = data;
 }
 
-async function loadPlayers() {
+async function loadPlayers({ silent = false } = {}) {
   if (!state.room) return;
 
   let result;
@@ -360,20 +371,19 @@ async function loadPlayers() {
         .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
         .eq("room_code", state.roomCode)
         .eq("is_online", true)
-        .gte("updated_at", getActiveSinceIso())
         .order("updated_at", { ascending: false }),
       "讀取玩家位置逾時。",
     );
   } catch (error) {
-    setRoomMessage(error.message);
+    if (!silent) setRoomMessage(error.message);
     return;
   }
 
   const { data, error } = result;
 
   if (error) {
-    setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
-    state.players = [];
+    if (!silent) setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
+    if (!silent) state.players = [];
     render();
     return;
   }
@@ -708,13 +718,10 @@ function getActivePlayers() {
 
 function isPlayerActive(player) {
   if (!player.isOnline) return false;
+  if (!Number.isFinite(player.lat) || !Number.isFinite(player.lng)) return false;
   if (!player.updatedAt) return false;
   const updatedAt = Date.parse(player.updatedAt);
   return Number.isFinite(updatedAt) && Date.now() - updatedAt <= ACTIVE_PLAYER_MS;
-}
-
-function getActiveSinceIso() {
-  return new Date(Date.now() - ACTIVE_PLAYER_MS).toISOString();
 }
 
 function getPayloadRoom(payload) {
@@ -764,7 +771,7 @@ function clearMarkers() {
   state.markers.clear();
 }
 
-function withTimeout(promise, message, timeoutMs = 10000) {
+function withTimeout(promise, message, timeoutMs = 20000) {
   let timeoutId;
   const timeout = new Promise((_, reject) => {
     timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
