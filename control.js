@@ -2,8 +2,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
-const ACTIVE_PLAYER_MS = 20_000;
-const REFRESH_PLAYERS_MS = 5_000;
+const ACTIVE_PLAYER_MS = 8_000;
+const REFRESH_PLAYERS_MS = 1_000;
 
 const state = {
   supabase: createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
@@ -19,6 +19,8 @@ const state = {
   players: [],
   markers: new Map(),
   refreshTimer: null,
+  autoFitMap: true,
+  isAutoFitting: false,
 };
 
 const el = {
@@ -67,8 +69,15 @@ function initMap() {
   }).setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lng], 17);
 
   L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20,
+    maxNativeZoom: 20,
+    maxZoom: 22,
   }).addTo(state.map);
+
+  state.map.on("zoomstart dragstart", () => {
+    if (!state.isAutoFitting) {
+      state.autoFitMap = false;
+    }
+  });
 }
 
 function bindEvents() {
@@ -116,6 +125,7 @@ async function watchRoom() {
 
   state.roomCode = cleanRoomCode(el.roomCode.value);
   el.roomCode.value = state.roomCode;
+  state.autoFitMap = true;
   await loadPlayers();
 
   if (state.channel) {
@@ -291,9 +301,16 @@ function renderMarkers() {
     }
   });
 
-  if (players.length) {
+  if (players.length && state.autoFitMap) {
     const group = L.featureGroup([...state.markers.values()]);
-    state.map.fitBounds(group.getBounds().pad(0.2), { maxZoom: 17 });
+    state.isAutoFitting = true;
+    state.map.fitBounds(group.getBounds().pad(0.2), { maxZoom: 20 });
+    state.map.once("moveend", () => {
+      state.isAutoFitting = false;
+    });
+    window.setTimeout(() => {
+      state.isAutoFitting = false;
+    }, 400);
   }
 }
 
