@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://unpkg.com" />
     <link rel="preconnect" href="https://esm.sh" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260529-rest-fix" />
+    <link rel="stylesheet" href="./styles.css?v=20260601-guard-message" />
   </head>
   <body>
     <main class="control-shell">
@@ -74,6 +74,16 @@
           </div>
         </section>
 
+        <section id="broadcastPanel" class="panel">
+          <h2>發訊區</h2>
+          <label>
+            廣播訊息
+            <textarea id="broadcastMessage" rows="3" maxlength="180" placeholder="輸入要傳給所有玩家的訊息"></textarea>
+          </label>
+          <button id="sendBroadcastButton" type="button" class="primary-action">送出訊息</button>
+          <p id="broadcastStatus" class="message-line"></p>
+        </section>
+
         <section class="panel player-panel">
           <h2>玩家位置</h2>
           <div id="playerList" class="player-list"></div>
@@ -87,6 +97,6 @@
     </main>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="./control.js?v=20260529-rest-fix" type="module"></script>
+    <script src="./control.js?v=20260601-guard-message" type="module"></script>
   </body>
 </html>

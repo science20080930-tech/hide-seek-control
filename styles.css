@@ -20,7 +20,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -43,6 +44,15 @@ input {
   padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+textarea {
+  width: 100%;
+  margin-top: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: vertical;
 }
 
 label {
@@ -180,6 +190,15 @@ button.player-row {
 .player-row.following {
   border-color: var(--blue);
   box-shadow: 0 0 0 2px rgba(29, 95, 153, 0.15);
+}
+
+.player-row.disconnected {
+  border-color: #f0aaa6;
+  background: #fff5f4;
+}
+
+.player-row.disconnected strong {
+  color: #9f2525;
 }
 
 .row-action {

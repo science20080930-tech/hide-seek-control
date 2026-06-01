@@ -2,8 +2,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
-const ACTIVE_PLAYER_MS = 120_000;
+const ACTIVE_PLAYER_MS = 15_000;
 const REFRESH_PLAYERS_MS = 2_000;
+const ROOM_SELECT = "*";
 
 const state = {
   supabase: createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
@@ -44,6 +45,9 @@ const el = {
   greenSlots: document.querySelector("#greenSlots"),
   startGameButton: document.querySelector("#startGameButton"),
   endGameButton: document.querySelector("#endGameButton"),
+  broadcastMessage: document.querySelector("#broadcastMessage"),
+  sendBroadcastButton: document.querySelector("#sendBroadcastButton"),
+  broadcastStatus: document.querySelector("#broadcastStatus"),
   cancelFollowButton: document.querySelector("#cancelFollowButton"),
   loginMessage: document.querySelector("#loginMessage"),
   totalCount: document.querySelector("#totalCount"),
@@ -100,6 +104,7 @@ function bindEvents() {
   el.watchButton.addEventListener("click", createOrWatchRoom);
   el.startGameButton.addEventListener("click", startGame);
   el.endGameButton.addEventListener("click", endGame);
+  el.sendBroadcastButton.addEventListener("click", sendBroadcast);
   el.cancelFollowButton.addEventListener("click", cancelFollow);
   el.redSlots.addEventListener("input", render);
   el.greenSlots.addEventListener("input", render);
@@ -260,7 +265,7 @@ async function clearRoomSessionData(roomCode) {
 }
 
 async function ensureRoomViaRest(roomCode) {
-  const selectPath = `game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at&room_code=eq.${encodeURIComponent(roomCode)}&limit=1`;
+  const selectPath = `game_rooms?select=${ROOM_SELECT}&room_code=eq.${encodeURIComponent(roomCode)}&limit=1`;
   const existingRows = await restRequest(selectPath, { method: "GET" }, "讀取房間逾時，請再按一次建立/監看。");
   const existingRoom = Array.isArray(existingRows) ? existingRows[0] : null;
 
@@ -280,7 +285,7 @@ async function ensureRoomViaRest(roomCode) {
       ended_at: null,
     };
     const insertedRows = await restRequest(
-      "game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at",
+      `game_rooms?select=${ROOM_SELECT}`,
       {
         method: "POST",
         headers: { prefer: "return=representation" },
@@ -310,7 +315,7 @@ async function ensureRoomViaRest(roomCode) {
     ended_at: null,
   };
   const updatedRows = await restRequest(
-    `game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at&room_code=eq.${encodeURIComponent(roomCode)}`,
+    `game_rooms?select=${ROOM_SELECT}&room_code=eq.${encodeURIComponent(roomCode)}`,
     {
       method: "PATCH",
       headers: { prefer: "return=representation" },
@@ -422,7 +427,7 @@ async function loadRoom({ silent = false } = {}) {
     result = await withTimeout(
       state.supabase
         .from("game_rooms")
-        .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+        .select(ROOM_SELECT)
         .eq("room_code", state.roomCode)
         .maybeSingle(),
       "讀取房間狀態逾時。",
@@ -452,7 +457,6 @@ async function loadPlayers({ silent = false } = {}) {
         .from("game_players")
         .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
         .eq("room_code", state.roomCode)
-        .eq("is_online", true)
         .order("updated_at", { ascending: false }),
       "讀取玩家位置逾時。",
     );
@@ -486,11 +490,6 @@ function applyRealtimePlayer(payload) {
   if (!payload.new?.user_id) return;
 
   const next = fromDatabasePlayer(payload.new);
-  if (!isPlayerActive(next)) {
-    state.players = state.players.filter((player) => player.userId !== next.userId);
-    return;
-  }
-
   const index = state.players.findIndex((player) => player.userId === next.userId);
   if (index >= 0) {
     state.players[index] = next;
@@ -616,6 +615,48 @@ async function endGame() {
   render();
 }
 
+async function sendBroadcast() {
+  if (!state.room) {
+    setBroadcastStatus("請先建立或監看房間。");
+    return;
+  }
+
+  const message = el.broadcastMessage.value.trim();
+  if (!message) {
+    setBroadcastStatus("請先輸入要發送的訊息。");
+    return;
+  }
+
+  el.sendBroadcastButton.disabled = true;
+  setBroadcastStatus("正在發送...");
+  const payload = {
+    broadcast_message: message,
+    broadcast_sender: state.session.user.email || "主持人",
+    broadcast_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const rows = await restRequest(
+      `game_rooms?select=${ROOM_SELECT}&room_code=eq.${encodeURIComponent(state.roomCode)}`,
+      {
+        method: "PATCH",
+        headers: { prefer: "return=representation" },
+        body: JSON.stringify(payload),
+      },
+      "發送訊息逾時，請再試一次。",
+    );
+    state.room = Array.isArray(rows) ? rows[0] : { ...state.room, ...payload };
+    el.broadcastMessage.value = "";
+    setBroadcastStatus("已發送給所有玩家。");
+    render();
+  } catch (error) {
+    setBroadcastStatus(error.message || "發送失敗，請再試一次。");
+  } finally {
+    el.sendBroadcastButton.disabled = false;
+  }
+}
+
 function followPlayer(playerId) {
   const player = state.players.find((item) => item.userId === playerId);
   if (!player) return;
@@ -650,8 +691,8 @@ function fromDatabasePlayer(record) {
     name: record.display_name || record.email || "玩家",
     team: record.team || "",
     roomCode: record.room_code || state.roomCode,
-    lat: Number(record.lat || DEFAULT_CENTER.lat),
-    lng: Number(record.lng || DEFAULT_CENTER.lng),
+    lat: record.lat === null || record.lat === undefined ? null : Number(record.lat),
+    lng: record.lng === null || record.lng === undefined ? null : Number(record.lng),
     accuracy: record.accuracy || 0,
     isOnline: record.is_online !== false,
     updatedAt: record.updated_at,
@@ -661,6 +702,7 @@ function fromDatabasePlayer(record) {
 function render() {
   renderShell();
   renderRoomControls();
+  renderBroadcastControls();
   renderStats();
   renderList();
   renderMarkers();
@@ -703,6 +745,15 @@ function renderRoomControls() {
   }
 }
 
+function renderBroadcastControls() {
+  const canSend = Boolean(state.session && state.room && state.room.status !== "ended");
+  el.broadcastMessage.disabled = !canSend;
+  el.sendBroadcastButton.disabled = !canSend;
+  if (!canSend && !state.room) {
+    setBroadcastStatus("請先建立或監看房間。");
+  }
+}
+
 function renderStats() {
   const players = getActivePlayers();
   el.totalCount.textContent = players.length;
@@ -712,18 +763,19 @@ function renderStats() {
 
 function renderList() {
   const players = getActivePlayers();
+  const disconnectedPlayers = getDisconnectedPlayers();
 
   if (!state.room) {
     el.playerList.innerHTML = emptyRow("尚未監看房間", "請先建立或輸入房間代碼。");
     return;
   }
 
-  if (!players.length) {
+  if (!players.length && !disconnectedPlayers.length) {
     el.playerList.innerHTML = emptyRow("目前沒有在線玩家", "玩家加入此房間並持續同步定位後會出現在這裡。");
     return;
   }
 
-  el.playerList.innerHTML = players
+  const activeRows = players
     .map((player) => {
       const teamLabel = player.team === "red" ? "紅隊" : player.team === "green" ? "綠隊" : "未分隊";
       const time = player.updatedAt ? new Date(player.updatedAt).toLocaleTimeString("zh-TW") : "--";
@@ -740,6 +792,20 @@ function renderList() {
       `;
     })
     .join("");
+  const disconnectedRows = disconnectedPlayers
+    .map((player) => `
+      <div class="player-row disconnected">
+        <span class="player-dot waiting-dot"></span>
+        <span>
+          <strong>${escapeHtml(player.name)}已斷開連線</strong>
+          <small>定位已關閉或連線中斷</small>
+        </span>
+        <span class="row-action">斷線</span>
+      </div>
+    `)
+    .join("");
+
+  el.playerList.innerHTML = activeRows + disconnectedRows;
 }
 
 function renderMarkers() {
@@ -796,6 +862,10 @@ function renderFollowControls() {
 
 function getActivePlayers() {
   return state.players.filter(isPlayerActive);
+}
+
+function getDisconnectedPlayers() {
+  return state.players.filter((player) => !isPlayerActive(player));
 }
 
 function isPlayerActive(player) {
@@ -907,6 +977,10 @@ function setLoginMessage(message) {
 
 function setRoomMessage(message) {
   el.roomMessage.textContent = message;
+}
+
+function setBroadcastStatus(message) {
+  el.broadcastStatus.textContent = message;
 }
 
 function cleanRoomCode(value) {
