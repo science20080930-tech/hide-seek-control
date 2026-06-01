@@ -30,6 +30,10 @@ const state = {
   isRoomBusy: false,
   isPolling: false,
   realtimeHealthy: false,
+  seenActivePlayerIds: new Set(),
+  notifiedDisconnectedIds: new Set(),
+  disconnectToastTimer: null,
+  suppressDisconnectNotifications: false,
 };
 
 const el = {
@@ -56,6 +60,9 @@ const el = {
   redCount: document.querySelector("#redCount"),
   greenCount: document.querySelector("#greenCount"),
   playerList: document.querySelector("#playerList"),
+  disconnectToast: document.querySelector("#disconnectToast"),
+  disconnectToastText: document.querySelector("#disconnectToastText"),
+  closeDisconnectToastButton: document.querySelector("#closeDisconnectToastButton"),
   map: document.querySelector("#map"),
 };
 
@@ -107,6 +114,7 @@ function bindEvents() {
   el.startGameButton.addEventListener("click", startGame);
   el.endGameButton.addEventListener("click", endGame);
   el.sendBroadcastButton.addEventListener("click", sendBroadcast);
+  el.closeDisconnectToastButton.addEventListener("click", hideDisconnectToast);
   el.cancelFollowButton.addEventListener("click", cancelFollow);
   el.redSlots.addEventListener("input", render);
   el.greenSlots.addEventListener("input", render);
@@ -155,6 +163,7 @@ async function logout() {
   await stopWatching();
   state.players = [];
   state.room = null;
+  resetDisconnectNotifications();
   await state.supabase.auth.signOut();
   render();
 }
@@ -344,6 +353,8 @@ async function watchRoom(nextRoomCode = state.roomCode, options = {}) {
   state.followedPlayerId = "";
   state.autoFitMap = true;
   state.realtimeHealthy = false;
+  state.suppressDisconnectNotifications = false;
+  resetDisconnectNotifications();
   render();
 
   if (options.roomSnapshot) {
@@ -479,6 +490,7 @@ async function loadPlayers({ silent = false } = {}) {
   }
 
   state.players = data.map(fromDatabasePlayer);
+  updateDisconnectNotifications();
   render();
 }
 
@@ -500,6 +512,7 @@ function applyRealtimePlayer(payload) {
   } else {
     state.players.push(next);
   }
+  updateDisconnectNotifications();
 }
 
 function applyRealtimeRoom(payload) {
@@ -615,6 +628,9 @@ async function endGame() {
   if (!state.room) return;
   const ok = window.confirm(`確定要結束 ${state.roomCode} 房間的遊戲並清除定位資料嗎？`);
   if (!ok) return;
+
+  state.suppressDisconnectNotifications = true;
+  hideDisconnectToast();
 
   setRoomMessage("正在結束遊戲...");
   const { error: roomError } = await state.supabase
@@ -907,6 +923,49 @@ function getActivePlayers() {
 
 function getDisconnectedPlayers() {
   return state.players.filter((player) => !isPlayerActive(player));
+}
+
+function updateDisconnectNotifications() {
+  if (state.suppressDisconnectNotifications || state.room?.status === "ended") return;
+
+  state.players.forEach((player) => {
+    if (isPlayerActive(player)) {
+      state.seenActivePlayerIds.add(player.userId);
+      state.notifiedDisconnectedIds.delete(player.userId);
+      return;
+    }
+
+    if (!state.seenActivePlayerIds.has(player.userId)) return;
+    if (state.notifiedDisconnectedIds.has(player.userId)) return;
+
+    state.notifiedDisconnectedIds.add(player.userId);
+    showDisconnectToast(`${player.name}已斷開連線`);
+  });
+}
+
+function showDisconnectToast(message) {
+  if (state.disconnectToastTimer) {
+    window.clearTimeout(state.disconnectToastTimer);
+  }
+  el.disconnectToastText.textContent = message;
+  el.disconnectToast.classList.remove("hidden");
+  state.disconnectToastTimer = window.setTimeout(() => {
+    hideDisconnectToast();
+  }, 10000);
+}
+
+function hideDisconnectToast() {
+  if (state.disconnectToastTimer) {
+    window.clearTimeout(state.disconnectToastTimer);
+    state.disconnectToastTimer = null;
+  }
+  el.disconnectToast.classList.add("hidden");
+}
+
+function resetDisconnectNotifications() {
+  state.seenActivePlayerIds.clear();
+  state.notifiedDisconnectedIds.clear();
+  hideDisconnectToast();
 }
 
 function isPlayerActive(player) {

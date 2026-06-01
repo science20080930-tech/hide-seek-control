@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://unpkg.com" />
     <link rel="preconnect" href="https://esm.sh" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260601-guard-message" />
+    <link rel="stylesheet" href="./styles.css?v=20260602-disconnect-toast" />
   </head>
   <body>
     <main class="control-shell">
@@ -96,7 +96,13 @@
       </section>
     </main>
 
+    <div id="disconnectToast" class="disconnect-toast hidden" role="status" aria-live="assertive">
+      <button id="closeDisconnectToastButton" class="toast-close" type="button" aria-label="關閉斷線通知">×</button>
+      <p class="eyebrow">玩家斷線</p>
+      <p id="disconnectToastText"></p>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="./control.js?v=20260601-guard-message" type="module"></script>
+    <script src="./control.js?v=20260602-disconnect-toast" type="module"></script>
   </body>
 </html>
