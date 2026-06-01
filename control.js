@@ -3,7 +3,9 @@ import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const ACTIVE_PLAYER_MS = 15_000;
-const REFRESH_PLAYERS_MS = 2_000;
+const REFRESH_PLAYERS_MS = 10_000;
+const CONTROL_READ_TIMEOUT_MS = 45_000;
+const CONTROL_WRITE_TIMEOUT_MS = 30_000;
 const ROOM_SELECT = "*";
 
 const state = {
@@ -431,9 +433,10 @@ async function loadRoom({ silent = false } = {}) {
         .eq("room_code", state.roomCode)
         .maybeSingle(),
       "讀取房間狀態逾時。",
+      CONTROL_READ_TIMEOUT_MS,
     );
   } catch (error) {
-    if (!silent) setRoomMessage(error.message);
+    if (!silent) setRoomMessage(state.room ? "連線暫時不穩，已保留目前房間狀態。" : error.message);
     return;
   }
 
@@ -459,9 +462,10 @@ async function loadPlayers({ silent = false } = {}) {
         .eq("room_code", state.roomCode)
         .order("updated_at", { ascending: false }),
       "讀取玩家位置逾時。",
+      CONTROL_READ_TIMEOUT_MS,
     );
   } catch (error) {
-    if (!silent) setRoomMessage(error.message);
+    if (!silent) setRoomMessage(state.players.length ? "連線暫時不穩，已保留目前玩家位置。" : error.message);
     return;
   }
 
@@ -509,6 +513,8 @@ function applyRealtimeRoom(payload) {
 }
 
 async function startGame() {
+  if (state.isRoomBusy) return;
+
   const players = getActivePlayers();
   const redSlots = getSlotValue(el.redSlots);
   const greenSlots = getSlotValue(el.greenSlots);
@@ -522,52 +528,87 @@ async function startGame() {
     return;
   }
 
+  state.isRoomBusy = true;
   el.startGameButton.disabled = true;
+  render();
   setRoomMessage("正在隨機分配隊伍...");
-  const shuffled = shuffle(players);
-  const assignments = shuffled.map((player, index) => ({
-    player,
-    team: index < redSlots ? "red" : "green",
-  }));
 
-  for (const assignment of assignments) {
-    const { error } = await state.supabase
-      .from("game_players")
-      .update({
-        team: assignment.team,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("room_code", state.roomCode)
-      .eq("user_id", assignment.player.userId);
+  try {
+    const shuffled = shuffle(players);
+    const assignments = shuffled.map((player, index) => ({
+      player,
+      team: index < redSlots ? "red" : "green",
+    }));
 
-    if (error) {
-      setRoomMessage(error.message);
-      render();
+    const assignmentResults = await Promise.all(
+      assignments.map((assignment) =>
+        withTimeout(
+          state.supabase
+            .from("game_players")
+            .update({
+              team: assignment.team,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("room_code", state.roomCode)
+            .eq("user_id", assignment.player.userId),
+          `分配 ${assignment.player.name} 隊伍逾時，請再按一次開始遊戲。`,
+          CONTROL_WRITE_TIMEOUT_MS,
+        ),
+      ),
+    );
+
+    const assignmentError = assignmentResults.find((result) => result.error)?.error;
+    if (assignmentError) {
+      setRoomMessage(assignmentError.message);
       return;
     }
-  }
 
-  const { error } = await state.supabase
-    .from("game_rooms")
-    .update({
+    const startedAt = new Date().toISOString();
+    const roomResult = await withTimeout(
+      state.supabase
+        .from("game_rooms")
+        .update({
+          status: "started",
+          red_slots: redSlots,
+          green_slots: greenSlots,
+          updated_at: startedAt,
+          started_at: startedAt,
+          ended_at: null,
+        })
+        .eq("room_code", state.roomCode),
+      "開始遊戲逾時，請確認玩家端是否已進入遊戲。",
+      CONTROL_WRITE_TIMEOUT_MS,
+    );
+
+    if (roomResult.error) {
+      setRoomMessage(roomResult.error.message);
+      return;
+    }
+
+    assignments.forEach((assignment) => {
+      const player = state.players.find((item) => item.userId === assignment.player.userId);
+      if (player) {
+        player.team = assignment.team;
+        player.updatedAt = startedAt;
+      }
+    });
+    state.room = {
+      ...state.room,
       status: "started",
       red_slots: redSlots,
       green_slots: greenSlots,
-      updated_at: new Date().toISOString(),
-      started_at: new Date().toISOString(),
+      updated_at: startedAt,
+      started_at: startedAt,
       ended_at: null,
-    })
-    .eq("room_code", state.roomCode);
-
-  if (error) {
-    setRoomMessage(error.message);
+    };
+    setRoomMessage("遊戲已開始。");
+    refreshRoomSnapshot();
+  } catch (error) {
+    setRoomMessage(error.message || "開始遊戲失敗，請再試一次。");
+  } finally {
+    state.isRoomBusy = false;
     render();
-    return;
   }
-
-  await loadRoom();
-  await loadPlayers();
-  setRoomMessage("遊戲已開始。");
 }
 
 async function endGame() {
