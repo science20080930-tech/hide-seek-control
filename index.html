@@ -45,11 +45,11 @@
           <div class="team-slots">
             <label>
               紅隊人數
-              <input id="redSlots" type="number" min="0" step="1" value="0" />
+              <input id="redSlots" type="text" inputmode="numeric" pattern="[0-9]*" value="0" />
             </label>
             <label>
               綠隊人數
-              <input id="greenSlots" type="number" min="0" step="1" value="0" />
+              <input id="greenSlots" type="text" inputmode="numeric" pattern="[0-9]*" value="0" />
             </label>
           </div>
           <div class="action-grid">
@@ -63,6 +63,10 @@
           <div>
             <strong id="totalCount">0</strong>
             <span>全部玩家</span>
+          </div>
+          <div>
+            <strong id="redScore">0</strong>
+            <span>紅隊捕獲</span>
           </div>
           <div>
             <strong id="redCount">0</strong>
@@ -103,6 +107,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="./control.js?v=20260602-disconnect-toast" type="module"></script>
+    <script src="./control.js?v=20260602-capture-rescue" type="module"></script>
   </body>
 </html>

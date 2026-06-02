@@ -149,7 +149,7 @@ h2 {
 }
 
 .stat-panel {
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   text-align: center;
 }
 
@@ -190,6 +190,15 @@ button.player-row {
 .player-row.following {
   border-color: var(--blue);
   box-shadow: 0 0 0 2px rgba(29, 95, 153, 0.15);
+}
+
+.player-row.captured {
+  border-color: #f0b36f;
+  background: #fff7ed;
+}
+
+.player-row.captured strong {
+  color: #9a3412;
 }
 
 .player-row.disconnected {
@@ -325,6 +334,11 @@ button.player-row {
 
 .control-marker.waiting {
   background: #8a9690;
+}
+
+.control-marker.captured {
+  background: #ea580c;
+  box-shadow: 0 0 0 5px rgba(234, 88, 12, 0.18), 0 5px 16px rgba(0, 0, 0, 0.24);
 }
 
 @media (max-width: 840px) {

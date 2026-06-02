@@ -7,6 +7,8 @@ const REFRESH_PLAYERS_MS = 10_000;
 const CONTROL_READ_TIMEOUT_MS = 45_000;
 const CONTROL_WRITE_TIMEOUT_MS = 30_000;
 const ROOM_SELECT = "*";
+const PLAYER_SELECT =
+  "user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at,capture_code,rescue_code,is_captured,captured_at";
 
 const state = {
   supabase: createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
@@ -57,6 +59,7 @@ const el = {
   cancelFollowButton: document.querySelector("#cancelFollowButton"),
   loginMessage: document.querySelector("#loginMessage"),
   totalCount: document.querySelector("#totalCount"),
+  redScore: document.querySelector("#redScore"),
   redCount: document.querySelector("#redCount"),
   greenCount: document.querySelector("#greenCount"),
   playerList: document.querySelector("#playerList"),
@@ -118,6 +121,12 @@ function bindEvents() {
   el.cancelFollowButton.addEventListener("click", cancelFollow);
   el.redSlots.addEventListener("input", render);
   el.greenSlots.addEventListener("input", render);
+  el.redSlots.addEventListener("focus", selectSlotInput);
+  el.greenSlots.addEventListener("focus", selectSlotInput);
+  el.redSlots.addEventListener("click", selectSlotInput);
+  el.greenSlots.addEventListener("click", selectSlotInput);
+  el.roomCode.addEventListener("focus", selectSlotInput);
+  el.roomCode.addEventListener("click", selectSlotInput);
   el.playerList.addEventListener("click", (event) => {
     const row = event.target.closest("[data-player-id]");
     if (row) {
@@ -259,6 +268,19 @@ async function createOrWatchRoom() {
 }
 
 async function clearRoomSessionData(roomCode) {
+  const { error: rescueError } = await withTimeout(
+    state.supabase
+      .from("game_rescue_attempts")
+      .delete()
+      .eq("room_code", roomCode),
+    "清除上一局救援資料逾時，房間尚未開放加入。",
+  );
+
+  if (rescueError) {
+    setRoomMessage(rescueError.message);
+    return false;
+  }
+
   const { error: playerError } = await withTimeout(
     state.supabase
       .from("game_players")
@@ -282,6 +304,12 @@ async function ensureRoomViaRest(roomCode) {
 
   if (!existingRoom) {
     await restRequest(
+      `game_rescue_attempts?room_code=eq.${encodeURIComponent(roomCode)}`,
+      { method: "DELETE", headers: { prefer: "return=minimal" } },
+      "清除上一局救援資料逾時，房間尚未開放加入。",
+    );
+
+    await restRequest(
       `game_players?room_code=eq.${encodeURIComponent(roomCode)}`,
       { method: "DELETE", headers: { prefer: "return=minimal" } },
       "清除上一局玩家資料逾時，房間尚未開放加入。",
@@ -291,6 +319,7 @@ async function ensureRoomViaRest(roomCode) {
       room_code: roomCode,
       status: "lobby",
       created_by: state.session.user.id,
+      red_score: 0,
       updated_at: new Date().toISOString(),
       started_at: null,
       ended_at: null,
@@ -312,6 +341,12 @@ async function ensureRoomViaRest(roomCode) {
   }
 
   await restRequest(
+    `game_rescue_attempts?room_code=eq.${encodeURIComponent(roomCode)}`,
+    { method: "DELETE", headers: { prefer: "return=minimal" } },
+    "清除上一局救援資料逾時，房間尚未開放加入。",
+  );
+
+  await restRequest(
     `game_players?room_code=eq.${encodeURIComponent(roomCode)}`,
     { method: "DELETE", headers: { prefer: "return=minimal" } },
     "清除上一局玩家資料逾時，房間尚未開放加入。",
@@ -321,6 +356,10 @@ async function ensureRoomViaRest(roomCode) {
     status: "lobby",
     red_slots: null,
     green_slots: null,
+    red_score: 0,
+    broadcast_message: null,
+    broadcast_sender: null,
+    broadcast_at: null,
     updated_at: new Date().toISOString(),
     started_at: null,
     ended_at: null,
@@ -469,7 +508,7 @@ async function loadPlayers({ silent = false } = {}) {
     result = await withTimeout(
       state.supabase
         .from("game_players")
-        .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+        .select(PLAYER_SELECT)
         .eq("room_code", state.roomCode)
         .order("updated_at", { ascending: false }),
       "讀取玩家位置逾時。",
@@ -548,9 +587,11 @@ async function startGame() {
 
   try {
     const shuffled = shuffle(players);
+    const issuedCodes = new Set();
     const assignments = shuffled.map((player, index) => ({
       player,
       team: index < redSlots ? "red" : "green",
+      captureCode: index < redSlots ? null : randomGameCode(issuedCodes),
     }));
 
     const assignmentResults = await Promise.all(
@@ -560,6 +601,10 @@ async function startGame() {
             .from("game_players")
             .update({
               team: assignment.team,
+              capture_code: assignment.captureCode,
+              rescue_code: null,
+              is_captured: false,
+              captured_at: null,
               updated_at: new Date().toISOString(),
             })
             .eq("room_code", state.roomCode)
@@ -584,6 +629,7 @@ async function startGame() {
           status: "started",
           red_slots: redSlots,
           green_slots: greenSlots,
+          red_score: 0,
           updated_at: startedAt,
           started_at: startedAt,
           ended_at: null,
@@ -602,6 +648,10 @@ async function startGame() {
       const player = state.players.find((item) => item.userId === assignment.player.userId);
       if (player) {
         player.team = assignment.team;
+        player.captureCode = assignment.captureCode || "";
+        player.rescueCode = "";
+        player.isCaptured = false;
+        player.capturedAt = "";
         player.updatedAt = startedAt;
       }
     });
@@ -610,6 +660,7 @@ async function startGame() {
       status: "started",
       red_slots: redSlots,
       green_slots: greenSlots,
+      red_score: 0,
       updated_at: startedAt,
       started_at: startedAt,
       ended_at: null,
@@ -653,6 +704,10 @@ async function endGame() {
       lat: null,
       lng: null,
       accuracy: null,
+      capture_code: null,
+      rescue_code: null,
+      is_captured: false,
+      captured_at: null,
       is_online: false,
       updated_at: new Date().toISOString(),
     })
@@ -660,6 +715,16 @@ async function endGame() {
 
   if (playerError) {
     setRoomMessage(playerError.message);
+    return;
+  }
+
+  const { error: rescueError } = await state.supabase
+    .from("game_rescue_attempts")
+    .delete()
+    .eq("room_code", state.roomCode);
+
+  if (rescueError) {
+    setRoomMessage(rescueError.message);
     return;
   }
 
@@ -753,6 +818,10 @@ function fromDatabasePlayer(record) {
     accuracy: record.accuracy || 0,
     isOnline: record.is_online !== false,
     updatedAt: record.updated_at,
+    captureCode: record.capture_code || "",
+    rescueCode: record.rescue_code || "",
+    isCaptured: record.is_captured === true,
+    capturedAt: record.captured_at || "",
   };
 }
 
@@ -814,6 +883,7 @@ function renderBroadcastControls() {
 function renderStats() {
   const players = getActivePlayers();
   el.totalCount.textContent = players.length;
+  el.redScore.textContent = state.room?.red_score || 0;
   el.redCount.textContent = players.filter((player) => player.team === "red").length;
   el.greenCount.textContent = players.filter((player) => player.team === "green").length;
 }
@@ -835,14 +905,15 @@ function renderList() {
   const activeRows = players
     .map((player) => {
       const teamLabel = player.team === "red" ? "紅隊" : player.team === "green" ? "綠隊" : "未分隊";
+      const statusLabel = player.isCaptured ? "已捕獲" : "在線";
       const time = player.updatedAt ? new Date(player.updatedAt).toLocaleTimeString("zh-TW") : "--";
       const activeClass = player.userId === state.followedPlayerId ? " following" : "";
       return `
-        <button class="player-row${activeClass}" type="button" data-player-id="${escapeHtml(player.userId)}">
+        <button class="player-row${activeClass}${player.isCaptured ? " captured" : ""}" type="button" data-player-id="${escapeHtml(player.userId)}">
           <span class="player-dot ${player.team === "red" ? "red-dot" : player.team === "green" ? "green-dot" : "waiting-dot"}"></span>
           <span>
             <strong>${escapeHtml(player.name)}</strong>
-            <small>${teamLabel} · ±${player.accuracy || "--"}m · ${time}</small>
+            <small>${teamLabel} · ${statusLabel} · ±${player.accuracy || "--"}m · ${time}</small>
           </span>
           <span class="row-action">追蹤</span>
         </button>
@@ -878,7 +949,7 @@ function renderMarkers() {
 
   players.forEach((player) => {
     const icon = L.divIcon({
-      html: `<span class="control-marker ${player.team || "waiting"}">${getMarkerText(player)}</span>`,
+      html: `<span class="control-marker ${player.team || "waiting"}${player.isCaptured ? " captured" : ""}">${getMarkerText(player)}</span>`,
       className: "",
       iconSize: [32, 32],
       iconAnchor: [16, 16],
@@ -984,6 +1055,10 @@ function getSlotValue(input) {
   return Math.max(0, Number.parseInt(input.value, 10) || 0);
 }
 
+function selectSlotInput(event) {
+  event.currentTarget.select();
+}
+
 function getRoomStatusLabel() {
   if (state.room?.status === "started") return "遊戲中";
   if (state.room?.status === "ended") return "已結束";
@@ -992,6 +1067,7 @@ function getRoomStatusLabel() {
 }
 
 function getMarkerText(player) {
+  if (player.isCaptured) return "捕";
   if (player.team === "red") return "紅";
   if (player.team === "green") return "綠";
   return "等";
@@ -1016,6 +1092,18 @@ function shuffle(items) {
     [next[index], next[randomIndex]] = [next[randomIndex], next[index]];
   }
   return next;
+}
+
+function randomGameCode(issuedCodes = new Set()) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  do {
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    code = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+  } while (issuedCodes.has(code));
+  issuedCodes.add(code);
+  return code;
 }
 
 function clearMarkers() {
