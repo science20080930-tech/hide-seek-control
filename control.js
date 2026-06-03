@@ -2,7 +2,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
-const ACTIVE_PLAYER_MS = 15_000;
+const ACTIVE_PLAYER_MS = 90_000;
+const HEARTBEAT_ACTIVE_MS = 20_000;
+const PRESENCE_GRACE_MS = 45_000;
 const REFRESH_PLAYERS_MS = 10_000;
 const CONTROL_READ_TIMEOUT_MS = 45_000;
 const CONTROL_WRITE_TIMEOUT_MS = 30_000;
@@ -24,6 +26,7 @@ const state = {
   channel: null,
   channelToken: 0,
   players: [],
+  presencePlayerIds: new Set(),
   markers: new Map(),
   refreshTimer: null,
   autoFitMap: true,
@@ -34,7 +37,9 @@ const state = {
   realtimeHealthy: false,
   seenActivePlayerIds: new Set(),
   notifiedDisconnectedIds: new Set(),
+  pendingDisconnectNames: new Set(),
   disconnectToastTimer: null,
+  disconnectBatchTimer: null,
   suppressDisconnectNotifications: false,
 };
 
@@ -171,6 +176,7 @@ async function login() {
 async function logout() {
   await stopWatching();
   state.players = [];
+  state.presencePlayerIds.clear();
   state.room = null;
   resetDisconnectNotifications();
   await state.supabase.auth.signOut();
@@ -411,7 +417,31 @@ async function watchRoom(nextRoomCode = state.roomCode, options = {}) {
   setRoomMessage(state.room ? `正在監看 ${state.roomCode} 房間` : "這個房間尚未建立。");
 
   state.channel = state.supabase
-    .channel(`control-${state.roomCode}-${token}`)
+    .channel(`hide-seek-room-${state.roomCode}`, {
+      config: {
+        presence: {
+          key: `control-${state.session.user.id}`,
+        },
+      },
+    })
+    .on("presence", { event: "sync" }, () => {
+      if (token !== state.channelToken) return;
+      updatePresencePlayers();
+      updateDisconnectNotifications();
+      render();
+    })
+    .on("presence", { event: "join" }, (payload) => {
+      if (token !== state.channelToken) return;
+      addPresencePlayers(payload.newPresences || []);
+      updateDisconnectNotifications();
+      render();
+    })
+    .on("presence", { event: "leave" }, (payload) => {
+      if (token !== state.channelToken) return;
+      removePresencePlayers(payload.leftPresences || []);
+      updateDisconnectNotifications();
+      render();
+    })
     .on(
       "postgres_changes",
       {
@@ -443,6 +473,12 @@ async function watchRoom(nextRoomCode = state.roomCode, options = {}) {
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
         state.realtimeHealthy = true;
+        state.channel.track({
+          role: "control",
+          room_code: state.roomCode,
+          online_at: new Date().toISOString(),
+        }).catch(() => {});
+        updatePresencePlayers();
         setRoomMessage(`正在監看 ${state.roomCode} 房間`);
       }
       if (status === "CHANNEL_ERROR") {
@@ -460,6 +496,7 @@ async function stopWatching(bumpToken = true) {
     await state.supabase.removeChannel(state.channel);
     state.channel = null;
   }
+  state.presencePlayerIds.clear();
 }
 
 async function refreshRoomSnapshot() {
@@ -486,7 +523,7 @@ async function loadRoom({ silent = false } = {}) {
       CONTROL_READ_TIMEOUT_MS,
     );
   } catch (error) {
-    if (!silent) setRoomMessage(state.room ? "連線暫時不穩，已保留目前房間狀態。" : error.message);
+    if (!silent && !state.room) setRoomMessage(error.message);
     return;
   }
 
@@ -515,7 +552,7 @@ async function loadPlayers({ silent = false } = {}) {
       CONTROL_READ_TIMEOUT_MS,
     );
   } catch (error) {
-    if (!silent) setRoomMessage(state.players.length ? "連線暫時不穩，已保留目前玩家位置。" : error.message);
+    if (!silent && !state.players.length) setRoomMessage(error.message);
     return;
   }
 
@@ -523,7 +560,6 @@ async function loadPlayers({ silent = false } = {}) {
 
   if (error) {
     if (!silent) setRoomMessage(`${error.message}。請確認此帳號已加入 control_operators。`);
-    if (!silent) state.players = [];
     render();
     return;
   }
@@ -905,11 +941,12 @@ function renderList() {
   const activeRows = players
     .map((player) => {
       const teamLabel = player.team === "red" ? "紅隊" : player.team === "green" ? "綠隊" : "未分隊";
-      const statusLabel = player.isCaptured ? "已捕獲" : "在線";
+      const connection = getPlayerConnectionState(player);
+      const statusLabel = player.isCaptured ? "已捕獲" : connection.label;
       const time = player.updatedAt ? new Date(player.updatedAt).toLocaleTimeString("zh-TW") : "--";
       const activeClass = player.userId === state.followedPlayerId ? " following" : "";
       return `
-        <button class="player-row${activeClass}${player.isCaptured ? " captured" : ""}" type="button" data-player-id="${escapeHtml(player.userId)}">
+        <button class="player-row${activeClass}${player.isCaptured ? " captured" : ""}${connection.state === "unstable" ? " unstable" : ""}" type="button" data-player-id="${escapeHtml(player.userId)}">
           <span class="player-dot ${player.team === "red" ? "red-dot" : player.team === "green" ? "green-dot" : "waiting-dot"}"></span>
           <span>
             <strong>${escapeHtml(player.name)}</strong>
@@ -921,16 +958,19 @@ function renderList() {
     })
     .join("");
   const disconnectedRows = disconnectedPlayers
-    .map((player) => `
-      <div class="player-row disconnected">
+    .map((player) => {
+      const connection = getPlayerConnectionState(player);
+      return `
+      <div class="player-row ${connection.state === "location_off" ? "location-off" : "disconnected"}">
         <span class="player-dot waiting-dot"></span>
         <span>
-          <strong>${escapeHtml(player.name)}已斷開連線</strong>
-          <small>定位已關閉或連線中斷</small>
+          <strong>${escapeHtml(player.name)}：${connection.label}</strong>
+          <small>${connection.detail}</small>
         </span>
-        <span class="row-action">斷線</span>
+        <span class="row-action">${connection.shortLabel}</span>
       </div>
-    `)
+    `;
+    })
     .join("");
 
   el.playerList.innerHTML = activeRows + disconnectedRows;
@@ -989,29 +1029,64 @@ function renderFollowControls() {
 }
 
 function getActivePlayers() {
-  return state.players.filter(isPlayerActive);
+  return state.players.filter((player) => getPlayerConnectionState(player).trackable);
 }
 
 function getDisconnectedPlayers() {
-  return state.players.filter((player) => !isPlayerActive(player));
+  return state.players.filter((player) => !getPlayerConnectionState(player).trackable);
 }
 
 function updateDisconnectNotifications() {
   if (state.suppressDisconnectNotifications || state.room?.status === "ended") return;
 
+  const newlyChangedPlayers = [];
+
   state.players.forEach((player) => {
-    if (isPlayerActive(player)) {
+    const connection = getPlayerConnectionState(player);
+    if (connection.trackable || connection.state === "unstable") {
       state.seenActivePlayerIds.add(player.userId);
-      state.notifiedDisconnectedIds.delete(player.userId);
+      clearPlayerStatusNotifications(player.userId);
       return;
     }
 
     if (!state.seenActivePlayerIds.has(player.userId)) return;
-    if (state.notifiedDisconnectedIds.has(player.userId)) return;
+    const notificationKey = `${player.userId}:${connection.state}`;
+    if (state.notifiedDisconnectedIds.has(notificationKey)) return;
 
-    state.notifiedDisconnectedIds.add(player.userId);
-    showDisconnectToast(`${player.name}已斷開連線`);
+    state.notifiedDisconnectedIds.add(notificationKey);
+    newlyChangedPlayers.push({ name: player.name, label: connection.label });
   });
+
+  if (newlyChangedPlayers.length) {
+    queueDisconnectToast(newlyChangedPlayers);
+  }
+}
+
+function clearPlayerStatusNotifications(userId) {
+  [...state.notifiedDisconnectedIds].forEach((key) => {
+    if (key.startsWith(`${userId}:`)) {
+      state.notifiedDisconnectedIds.delete(key);
+    }
+  });
+}
+
+function queueDisconnectToast(entries) {
+  entries.forEach((entry) => {
+    state.pendingDisconnectNames.add(`${entry.name}：${entry.label}`);
+  });
+
+  if (state.disconnectBatchTimer) {
+    window.clearTimeout(state.disconnectBatchTimer);
+  }
+
+  state.disconnectBatchTimer = window.setTimeout(() => {
+    state.disconnectBatchTimer = null;
+    const names = [...state.pendingDisconnectNames];
+    state.pendingDisconnectNames.clear();
+    if (names.length) {
+      showDisconnectToast(getDisconnectToastMessage(names));
+    }
+  }, 600);
 }
 
 function showDisconnectToast(message) {
@@ -1025,6 +1100,15 @@ function showDisconnectToast(message) {
   }, 10000);
 }
 
+function getDisconnectToastMessage(names) {
+  if (names.length === 1) return names[0];
+
+  const visibleNames = names.slice(0, 5).join("、");
+  const hiddenCount = names.length - 5;
+  const suffix = hiddenCount > 0 ? `，另有 ${hiddenCount} 人` : "";
+  return `${visibleNames}${suffix}`;
+}
+
 function hideDisconnectToast() {
   if (state.disconnectToastTimer) {
     window.clearTimeout(state.disconnectToastTimer);
@@ -1036,15 +1120,112 @@ function hideDisconnectToast() {
 function resetDisconnectNotifications() {
   state.seenActivePlayerIds.clear();
   state.notifiedDisconnectedIds.clear();
+  state.pendingDisconnectNames.clear();
+  if (state.disconnectBatchTimer) {
+    window.clearTimeout(state.disconnectBatchTimer);
+    state.disconnectBatchTimer = null;
+  }
   hideDisconnectToast();
 }
 
 function isPlayerActive(player) {
-  if (!player.isOnline) return false;
-  if (!Number.isFinite(player.lat) || !Number.isFinite(player.lng)) return false;
-  if (!player.updatedAt) return false;
+  return getPlayerConnectionState(player).trackable;
+}
+
+function getPlayerConnectionState(player) {
+  const hasRealtimePresence = state.presencePlayerIds.has(player.userId);
+  const hasLocation = Number.isFinite(player.lat) && Number.isFinite(player.lng);
+  const age = getHeartbeatAge(player);
+
+  if (!hasLocation) {
+    if (hasRealtimePresence) {
+      return {
+        state: "location_off",
+        label: "定位關閉",
+        shortLabel: "定位關閉",
+        detail: "玩家網頁仍在線，但位置授權已關閉或目前無法取得 GPS。",
+        trackable: false,
+      };
+    }
+
+    return {
+      state: "disconnected",
+      label: "斷線",
+      shortLabel: "斷線",
+      detail: player.isOnline ? "玩家網頁連線已中斷，尚未恢復即時定位。" : "玩家已離線或關閉瀏覽器。",
+      trackable: false,
+    };
+  }
+
+  if (hasRealtimePresence) {
+    return { state: "online", label: "在線", trackable: true };
+  }
+
+  if (!player.isOnline && !hasRealtimePresence) {
+    return {
+      state: "disconnected",
+      label: "斷線",
+      shortLabel: "斷線",
+      detail: "玩家已離線或關閉瀏覽器。",
+      trackable: false,
+    };
+  }
+
+  if (age !== null && age <= HEARTBEAT_ACTIVE_MS) return { state: "online", label: "在線", trackable: true };
+
+  if (!hasRealtimePresence && age !== null && age > PRESENCE_GRACE_MS) {
+    return {
+      state: "disconnected",
+      label: "斷線",
+      shortLabel: "斷線",
+      detail: "玩家網頁連線已中斷，定位停止更新。",
+      trackable: false,
+    };
+  }
+
+  if (age !== null && age <= ACTIVE_PLAYER_MS) return { state: "unstable", label: "連線不穩", trackable: true };
+  return {
+    state: "disconnected",
+    label: "斷線",
+    shortLabel: "斷線",
+    detail: "玩家網頁連線已中斷，定位停止更新。",
+    trackable: false,
+  };
+}
+
+function getHeartbeatAge(player) {
+  if (!player.updatedAt) return null;
   const updatedAt = Date.parse(player.updatedAt);
-  return Number.isFinite(updatedAt) && Date.now() - updatedAt <= ACTIVE_PLAYER_MS;
+  return Number.isFinite(updatedAt) ? Date.now() - updatedAt : null;
+}
+
+function updatePresencePlayers() {
+  const next = new Set();
+  const presenceState = state.channel?.presenceState?.() || {};
+  Object.values(presenceState).forEach((metas) => {
+    metas.forEach((meta) => {
+      if (meta.role === "player" && meta.room_code === state.roomCode && meta.user_id) {
+        next.add(meta.user_id);
+      }
+    });
+  });
+  state.presencePlayerIds = next;
+}
+
+function addPresencePlayers(metas) {
+  metas.forEach((meta) => {
+    if (meta.role === "player" && meta.room_code === state.roomCode && meta.user_id) {
+      state.presencePlayerIds.add(meta.user_id);
+    }
+  });
+}
+
+function removePresencePlayers(metas) {
+  metas.forEach((meta) => {
+    if (meta.role === "player" && meta.room_code === state.roomCode && meta.user_id) {
+      state.presencePlayerIds.delete(meta.user_id);
+    }
+  });
 }
 
 function getPayloadRoom(payload) {

@@ -201,6 +201,20 @@ button.player-row {
   color: #9a3412;
 }
 
+.player-row.unstable {
+  border-color: #f2cf74;
+  background: #fffbea;
+}
+
+.player-row.location-off {
+  border-color: #f4c27a;
+  background: #fff8e8;
+}
+
+.player-row.location-off strong {
+  color: #a85c08;
+}
+
 .player-row.disconnected {
   border-color: #f0aaa6;
   background: #fff5f4;
@@ -295,6 +309,7 @@ button.player-row {
   color: #9f2525;
   font-weight: 900;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .toast-close {
