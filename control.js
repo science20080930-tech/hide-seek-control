@@ -2,9 +2,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
-const ACTIVE_PLAYER_MS = 90_000;
-const HEARTBEAT_ACTIVE_MS = 20_000;
-const PRESENCE_GRACE_MS = 45_000;
 const REFRESH_PLAYERS_MS = 10_000;
 const CONTROL_READ_TIMEOUT_MS = 45_000;
 const CONTROL_WRITE_TIMEOUT_MS = 30_000;
@@ -946,7 +943,7 @@ function renderList() {
       const time = player.updatedAt ? new Date(player.updatedAt).toLocaleTimeString("zh-TW") : "--";
       const activeClass = player.userId === state.followedPlayerId ? " following" : "";
       return `
-        <button class="player-row${activeClass}${player.isCaptured ? " captured" : ""}${connection.state === "unstable" ? " unstable" : ""}" type="button" data-player-id="${escapeHtml(player.userId)}">
+        <button class="player-row${activeClass}${player.isCaptured ? " captured" : ""}" type="button" data-player-id="${escapeHtml(player.userId)}">
           <span class="player-dot ${player.team === "red" ? "red-dot" : player.team === "green" ? "green-dot" : "waiting-dot"}"></span>
           <span>
             <strong>${escapeHtml(player.name)}</strong>
@@ -1043,7 +1040,7 @@ function updateDisconnectNotifications() {
 
   state.players.forEach((player) => {
     const connection = getPlayerConnectionState(player);
-    if (connection.trackable || connection.state === "unstable") {
+    if (connection.trackable) {
       state.seenActivePlayerIds.add(player.userId);
       clearPlayerStatusNotifications(player.userId);
       return;
@@ -1135,24 +1132,25 @@ function isPlayerActive(player) {
 function getPlayerConnectionState(player) {
   const hasRealtimePresence = state.presencePlayerIds.has(player.userId);
   const hasLocation = Number.isFinite(player.lat) && Number.isFinite(player.lng);
-  const age = getHeartbeatAge(player);
 
-  if (!hasLocation) {
-    if (hasRealtimePresence) {
-      return {
-        state: "location_off",
-        label: "定位關閉",
-        shortLabel: "定位關閉",
-        detail: "玩家網頁仍在線，但位置授權已關閉或目前無法取得 GPS。",
-        trackable: false,
-      };
-    }
-
+  if (!player.isOnline) {
     return {
       state: "disconnected",
       label: "斷線",
       shortLabel: "斷線",
-      detail: player.isOnline ? "玩家網頁連線已中斷，尚未恢復即時定位。" : "玩家已離線或關閉瀏覽器。",
+      detail: "玩家已關閉瀏覽器、離開頁面或網路中斷。",
+      trackable: false,
+    };
+  }
+
+  if (!hasLocation) {
+    return {
+      state: "location_off",
+      label: "定位關閉",
+      shortLabel: "定位關閉",
+      detail: hasRealtimePresence
+        ? "玩家網頁仍在線，但位置授權已關閉或目前無法取得 GPS。"
+        : "玩家帳號仍在線，但目前沒有定位資料；若對方關閉頁面會另外顯示斷線。",
       trackable: false,
     };
   }
@@ -1161,42 +1159,17 @@ function getPlayerConnectionState(player) {
     return { state: "online", label: "在線", trackable: true };
   }
 
-  if (!player.isOnline && !hasRealtimePresence) {
+  if (state.realtimeHealthy) {
     return {
       state: "disconnected",
       label: "斷線",
       shortLabel: "斷線",
-      detail: "玩家已離線或關閉瀏覽器。",
+      detail: "玩家網頁已離開即時連線，可能關閉瀏覽器或網路中斷。",
       trackable: false,
     };
   }
 
-  if (age !== null && age <= HEARTBEAT_ACTIVE_MS) return { state: "online", label: "在線", trackable: true };
-
-  if (!hasRealtimePresence && age !== null && age > PRESENCE_GRACE_MS) {
-    return {
-      state: "disconnected",
-      label: "斷線",
-      shortLabel: "斷線",
-      detail: "玩家網頁連線已中斷，定位停止更新。",
-      trackable: false,
-    };
-  }
-
-  if (age !== null && age <= ACTIVE_PLAYER_MS) return { state: "unstable", label: "連線不穩", trackable: true };
-  return {
-    state: "disconnected",
-    label: "斷線",
-    shortLabel: "斷線",
-    detail: "玩家網頁連線已中斷，定位停止更新。",
-    trackable: false,
-  };
-}
-
-function getHeartbeatAge(player) {
-  if (!player.updatedAt) return null;
-  const updatedAt = Date.parse(player.updatedAt);
-  return Number.isFinite(updatedAt) ? Date.now() - updatedAt : null;
+  return { state: "online", label: "在線", trackable: true };
 }
 
 function updatePresencePlayers() {
