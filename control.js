@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_CONFIG } from "./supabase-config.js";
 
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
-const REFRESH_PLAYERS_MS = 10_000;
+const REFRESH_PLAYERS_MS = 3_000;
 const CONTROL_READ_TIMEOUT_MS = 45_000;
 const CONTROL_WRITE_TIMEOUT_MS = 30_000;
 const ROOM_SELECT = "*";
