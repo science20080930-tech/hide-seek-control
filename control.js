@@ -6,8 +6,7 @@ const REFRESH_PLAYERS_MS = 3_000;
 const CONTROL_READ_TIMEOUT_MS = 45_000;
 const CONTROL_WRITE_TIMEOUT_MS = 30_000;
 const ROOM_SELECT = "*";
-const PLAYER_SELECT =
-  "user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at,capture_code,rescue_code,is_captured,captured_at";
+const PLAYER_SELECT = "*";
 
 const state = {
   supabase: createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
@@ -608,6 +607,10 @@ async function startGame() {
     setRoomMessage("只有等待中的房間可以開始。");
     return;
   }
+  if (redSlots <= 0 || greenSlots <= 0) {
+    setRoomMessage("紅隊與綠隊人數都必須大於 0。");
+    return;
+  }
   if (redSlots + greenSlots !== players.length || players.length === 0) {
     setRoomMessage("紅隊與綠隊人數加總必須等於目前在線玩家總數。");
     return;
@@ -621,6 +624,7 @@ async function startGame() {
   try {
     const shuffled = shuffle(players);
     const issuedCodes = new Set();
+    const skillSchemaReady = hasSkillSchema();
     const assignments = shuffled.map((player, index) => ({
       player,
       team: index < redSlots ? "red" : "green",
@@ -638,6 +642,13 @@ async function startGame() {
               rescue_code: null,
               is_captured: false,
               captured_at: null,
+              ...(skillSchemaReady
+                ? {
+                    skill_card: null,
+                    skill_card_awarded_at: null,
+                    skill_immune_until: null,
+                  }
+                : {}),
               updated_at: new Date().toISOString(),
             })
             .eq("room_code", state.roomCode)
@@ -663,6 +674,19 @@ async function startGame() {
           red_slots: redSlots,
           green_slots: greenSlots,
           red_score: 0,
+          ...(skillSchemaReady
+            ? {
+                pause_all_until: null,
+                pause_all_except_user_id: null,
+                pause_green_until: null,
+                pause_red_until: null,
+                hide_green_until: null,
+                skill_event_kind: null,
+                skill_event_message: null,
+                skill_event_actor_id: null,
+                skill_event_at: null,
+              }
+            : {}),
           updated_at: startedAt,
           started_at: startedAt,
           ended_at: null,
@@ -685,6 +709,9 @@ async function startGame() {
         player.rescueCode = "";
         player.isCaptured = false;
         player.capturedAt = "";
+        player.skillCard = "";
+        player.skillAwardedAt = "";
+        player.skillImmuneUntil = "";
         player.updatedAt = startedAt;
       }
     });
@@ -694,6 +721,19 @@ async function startGame() {
       red_slots: redSlots,
       green_slots: greenSlots,
       red_score: 0,
+      ...(skillSchemaReady
+        ? {
+            pause_all_until: null,
+            pause_all_except_user_id: null,
+            pause_green_until: null,
+            pause_red_until: null,
+            hide_green_until: null,
+            skill_event_kind: null,
+            skill_event_message: null,
+            skill_event_actor_id: null,
+            skill_event_at: null,
+          }
+        : {}),
       updated_at: startedAt,
       started_at: startedAt,
       ended_at: null,
@@ -717,10 +757,24 @@ async function endGame() {
   hideDisconnectToast();
 
   setRoomMessage("正在結束遊戲...");
+  const skillSchemaReady = hasSkillSchema();
   const { error: roomError } = await state.supabase
     .from("game_rooms")
     .update({
       status: "ended",
+      ...(skillSchemaReady
+        ? {
+            pause_all_until: null,
+            pause_all_except_user_id: null,
+            pause_green_until: null,
+            pause_red_until: null,
+            hide_green_until: null,
+            skill_event_kind: null,
+            skill_event_message: null,
+            skill_event_actor_id: null,
+            skill_event_at: null,
+          }
+        : {}),
       updated_at: new Date().toISOString(),
       ended_at: new Date().toISOString(),
     })
@@ -741,6 +795,13 @@ async function endGame() {
       rescue_code: null,
       is_captured: false,
       captured_at: null,
+      ...(skillSchemaReady
+        ? {
+            skill_card: null,
+            skill_card_awarded_at: null,
+            skill_immune_until: null,
+          }
+        : {}),
       is_online: false,
       updated_at: new Date().toISOString(),
     })
@@ -855,7 +916,14 @@ function fromDatabasePlayer(record) {
     rescueCode: record.rescue_code || "",
     isCaptured: record.is_captured === true,
     capturedAt: record.captured_at || "",
+    skillCard: record.skill_card || "",
+    skillAwardedAt: record.skill_card_awarded_at || "",
+    skillImmuneUntil: record.skill_immune_until || "",
   };
+}
+
+function hasSkillSchema() {
+  return Boolean(state.room && Object.prototype.hasOwnProperty.call(state.room, "skill_event_at"));
 }
 
 function render() {
@@ -940,6 +1008,7 @@ function renderList() {
       const teamLabel = player.team === "red" ? "紅隊" : player.team === "green" ? "綠隊" : "未分隊";
       const connection = getPlayerConnectionState(player);
       const statusLabel = player.isCaptured ? "已捕獲" : connection.label;
+      const skillLabel = getPlayerSkillLabel(player);
       const time = player.updatedAt ? new Date(player.updatedAt).toLocaleTimeString("zh-TW") : "--";
       const activeClass = player.userId === state.followedPlayerId ? " following" : "";
       return `
@@ -947,7 +1016,7 @@ function renderList() {
           <span class="player-dot ${player.team === "red" ? "red-dot" : player.team === "green" ? "green-dot" : "waiting-dot"}"></span>
           <span>
             <strong>${escapeHtml(player.name)}</strong>
-            <small>${teamLabel} · ${statusLabel} · ±${player.accuracy || "--"}m · ${time}</small>
+            <small>${teamLabel} · ${statusLabel}${skillLabel ? ` · ${skillLabel}` : ""} · ±${player.accuracy || "--"}m · ${time}</small>
           </span>
           <span class="row-action">追蹤</span>
         </button>
@@ -971,6 +1040,31 @@ function renderList() {
     .join("");
 
   el.playerList.innerHTML = activeRows + disconnectedRows;
+}
+
+function getPlayerSkillLabel(player) {
+  if (player.skillCard) return `持卡：${getSkillCardLabel(player.skillCard)}`;
+  const immuneSeconds = getActiveUntilSeconds(player.skillImmuneUntil);
+  if (immuneSeconds > 0) return `無敵 ${immuneSeconds}s`;
+  return "";
+}
+
+function getSkillCardLabel(card) {
+  const labels = {
+    red_pause_all_5: "全停5秒",
+    red_pause_green_3: "綠停3秒",
+    green_hide_green_3: "綠隱3秒",
+    green_immune_30: "無敵30秒",
+    green_pause_red_3: "紅停3秒",
+  };
+  return labels[card] || "未知";
+}
+
+function getActiveUntilSeconds(value) {
+  if (!value) return 0;
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return 0;
+  return Math.max(0, Math.ceil((time - Date.now()) / 1000));
 }
 
 function renderMarkers() {
